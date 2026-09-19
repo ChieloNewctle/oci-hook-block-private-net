@@ -1,0 +1,74 @@
+#!/bin/bash
+set -euo pipefail
+
+bundle=$(jq -r .bundle)
+netns=$(jq -er \
+  '.linux.namespaces[] | select(.type=="network") | .path | select(. != "")' \
+  "$bundle/config.json")
+
+[[ -e $netns ]] || {
+  echo "netns $netns not found" >&2
+  exit 1
+}
+
+NFT=/usr/sbin/nft
+[[ -x $NFT ]] || NFT=$(command -v nft) || {
+  echo "nft not found" >&2
+  exit 1
+}
+
+if ! nsenter --net="$netns" "$NFT" -f - <<EOF
+destroy table inet block_private_net
+
+table inet block_private_net {
+  set private4 {
+    type ipv4_addr
+    flags interval
+    elements = {
+      0.0.0.0/8,
+      10.0.0.0/8,
+      100.64.0.0/10,
+      169.254.0.0/16,
+      172.16.0.0/12,
+      192.0.2.0/24,
+      192.168.0.0/16,
+      198.51.100.0/24,
+      203.0.113.0/24,
+      224.0.0.0/4,
+      240.0.0.0/4,
+    }
+  }
+
+  chain output {
+    type filter hook output priority filter; policy drop
+    ct state established,related accept
+    ct state invalid drop
+    meta nfproto ipv6 reject with icmpv6 admin-prohibited
+    fib daddr type local accept
+    ip daddr @private4 meta l4proto tcp reject with tcp reset
+    ip daddr @private4 reject with icmp admin-prohibited
+    ip version 4 accept
+  }
+
+  chain input {
+    type filter hook input priority filter; policy drop
+    ct state established,related accept
+    meta nfproto ipv6 drop
+    ip protocol { tcp, udp } accept
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy accept
+    ct state established,related accept
+    ct state invalid drop
+    meta nfproto ipv6 reject with icmpv6 admin-prohibited
+    fib daddr type local accept
+    ip daddr @private4 meta l4proto tcp reject with tcp reset
+    ip daddr @private4 reject with icmp admin-prohibited
+  }
+}
+EOF
+then
+  echo "nft failed" >&2
+  exit 1
+fi

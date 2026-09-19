@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "hook": {
+    "path": "/usr/libexec/oci/hooks.d/block-private-net",
+    "args": ["block-private-net"]
+  },
+  "when": {
+    "annotations": {
+      "^block-private-net$": "^(1|true)$"
+    }
+  },
+  "stages": ["createRuntime"]
+}
+
