@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PKG=oci-hook-block-private-net
-VER=1.0.0
+VER=1.0.1
 ARCH=all
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
