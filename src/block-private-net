@@ -1,7 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-bundle=$(jq -r .bundle)
+state=$(cat)
+
+bundle=$(jq -r .bundle <<<"$state")
 netns=$(jq -er \
   '.linux.namespaces[] | select(.type=="network") | .path | select(. != "")' \
   "$bundle/config.json")
@@ -16,6 +18,49 @@ NFT=/usr/sbin/nft
   echo "nft not found" >&2
   exit 1
 }
+
+host_ip=$(
+  jq -r \
+    '.annotations["block-private-net.expose-host.ip"] // "169.254.1.2"' \
+    <<<"$state"
+)
+[[ $host_ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+  echo "invalid host IP: $host_ip" >&2
+  exit 1
+}
+IFS=. read -r a b c d <<<"$host_ip"
+((10#$a <= 255 && \
+10#$b <= 255 && \
+10#$c <= 255 && \
+10#$d <= 255)) || {
+  echo "invalid host IP: $host_ip" >&2
+  exit 1
+}
+
+allowed_tcp=$(
+  jq -r \
+    '.annotations["block-private-net.expose-host.ports.tcp"] // ""' \
+    <<<"$state"
+)
+
+allowed_tcp_rule=
+if [[ -n $allowed_tcp ]]; then
+  IFS=',' read -r -a ports <<<"$allowed_tcp"
+
+  for port in "${ports[@]}"; do
+    [[ $port =~ ^[0-9]+$ ]] || {
+      echo "invalid port: $port" >&2
+      exit 1
+    }
+
+    ((port >= 1 && port <= 65535)) || {
+      echo "invalid port: $port" >&2
+      exit 1
+    }
+  done
+
+  allowed_tcp_rule="ip daddr ${host_ip} tcp dport { ${allowed_tcp//,/,\ } } accept"
+fi
 
 if ! nsenter --net="$netns" "$NFT" -f - <<EOF
 destroy table inet block_private_net
@@ -45,6 +90,7 @@ table inet block_private_net {
     ct state invalid drop
     meta nfproto ipv6 reject with icmpv6 admin-prohibited
     fib daddr type local accept
+    ${allowed_tcp_rule}
     ip daddr @private4 meta l4proto tcp reject with tcp reset
     ip daddr @private4 reject with icmp admin-prohibited
     ip version 4 accept
@@ -61,6 +107,7 @@ table inet block_private_net {
     ct state invalid drop
     meta nfproto ipv6 reject with icmpv6 admin-prohibited
     fib daddr type local accept
+    ${allowed_tcp_rule}
     ip daddr @private4 meta l4proto tcp reject with tcp reset
     ip daddr @private4 reject with icmp admin-prohibited
   }
